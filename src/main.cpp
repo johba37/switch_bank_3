@@ -2,6 +2,7 @@
 #include <NMEA2000_esp32.h>
 #include <N2kMessages.h>
 #include <N2kMsg.h>
+#include <N2kCZone.h>
 #include <ReactESP.h>
 #include <esp_int_wdt.h>
 #include <esp_task_wdt.h>
@@ -20,6 +21,12 @@ ReactESP app;
 #define BinaryDeviceInstance 0x03 // Instance of 127501 switch state message
 #define SwitchBankInstance 0x03   //Instance of 127502 change switch state message
 #define NumberOfSwitches 8   // change to 4 for bit switch bank
+
+// C-Zone piggyback configuration
+#define CZONE_BANK_INSTANCE 1       // Bank instance for navigation and motor lights
+#define CZONE_NAV_LIGHT_SWITCH 4    // Switch 4 on C-Zone bank 1 (navigation light)
+#define CZONE_MOTOR_LIGHT_SWITCH 6  // Switch 6 on C-Zone bank 1 (motor light)
+#define STERN_LIGHT_RELAY_INDEX 2   // Index in CzRelayPinMap (3rd relay, GPIO 12)
 
 // List here messages your device will transmit.
 const unsigned long TransmitMessages[] PROGMEM = { 127502L,130813L,0 };
@@ -94,6 +101,43 @@ void SetChangeSwitchState(uint8_t SwitchIndex, bool ItemStatus) {
 }
 
 //*****************************************************************************
+void ParseCZoneSwitchState(const tN2kMsg& N2kMsg) {
+    // Parse C-Zone PGNs 65284 and 65301 for switch state changes
+    if (N2kMsg.PGN != 65284L && N2kMsg.PGN != 65301L) return;
+
+    tN2kCZoneSwitchStatus Status;
+    bool parsed = false;
+
+    if (N2kMsg.PGN == 65284L) {
+        parsed = ParseN2kPGN65284CZoneSwitchStatus(N2kMsg, Status);
+    } else if (N2kMsg.PGN == 65301L) {
+        parsed = ParseN2kPGN65301CZoneSwitchStatus(N2kMsg, Status);
+    }
+
+    if (!parsed || !Status.SwitchBitsValid) {
+        return;  // Not a valid switch status message
+    }
+
+    // PIGGYBACK LOGIC: Monitor nav light (switch 4) and motor light (switch 6)
+    // Stern light should be ON if EITHER switch is ON
+    if (Status.BankInstance == CZONE_BANK_INSTANCE) {
+        bool navLightOn = N2kCZoneIsSwitchOn(Status, CZONE_NAV_LIGHT_SWITCH);
+        bool motorLightOn = N2kCZoneIsSwitchOn(Status, CZONE_MOTOR_LIGHT_SWITCH);
+        bool sternLightShouldBeOn = navLightOn || motorLightOn;
+
+        // Control stern light relay based on nav OR motor light state
+        // INVERTED logic: LOW = ON (optocoupler + high-side switch)
+        digitalWrite(CzRelayPinMap[STERN_LIGHT_RELAY_INDEX], sternLightShouldBeOn ? LOW : HIGH);
+
+        Serial.printf("PIGGYBACK: Nav=%s Motor=%s -> Stern light %s (GPIO %d = %s)\n",
+                      navLightOn ? "ON" : "OFF",
+                      motorLightOn ? "ON" : "OFF",
+                      sternLightShouldBeOn ? "ON" : "OFF",
+                      CzRelayPinMap[STERN_LIGHT_RELAY_INDEX],
+                      sternLightShouldBeOn ? "LOW" : "HIGH");
+    }
+}
+
 void ParseN2kPGN127502(const tN2kMsg& N2kMsg) {
     tN2kOnOff State;
     unsigned char ChangeIndex;
@@ -156,7 +200,8 @@ void HandleStreamN2kMsg(const tN2kMsg &message) {
   num_n2k_messages++;
   time_since_last_can_rx = 0;
   ToggleLed();
-  ParseN2kPGN127502(message);
+  ParseCZoneSwitchState(message);  // Parse C-Zone messages
+  ParseN2kPGN127502(message);       // Parse standard NMEA switch bank messages
 }
 
 void RecoverFromCANBusOff() {
@@ -221,13 +266,20 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   app.onRepeatMicros(1e6 / 1, []() { ToggleLed(); });
 
-  // Initialize the output variables as outputs
+  // Initialize relay outputs
   pinMode(CzRelayPinMap[0], OUTPUT);
   digitalWrite(CzRelayPinMap[0], LOW);
 
-  // Initialize the output variables as outputs
   pinMode(CzRelayPinMap[1], OUTPUT);
   digitalWrite(CzRelayPinMap[1], LOW);
+
+  // Initialize stern light relay (used for C-Zone piggyback)
+  // Start with HIGH (OFF state due to inverted logic: optocoupler + high-side switch)
+  pinMode(CzRelayPinMap[STERN_LIGHT_RELAY_INDEX], OUTPUT);
+  digitalWrite(CzRelayPinMap[STERN_LIGHT_RELAY_INDEX], HIGH);
+
+  Serial.printf("Stern light relay initialized on GPIO %d (relay index %d) - inverted logic\n",
+                CzRelayPinMap[STERN_LIGHT_RELAY_INDEX], STERN_LIGHT_RELAY_INDEX + 1);
 
 
   // // initialize intitial switch state
