@@ -1,10 +1,10 @@
 # ESP32 NMEA2000 Switch Bank Controller
 
-An ESP32-based NMEA 2000 switch bank controller that manages 8 relay outputs via CAN bus communication. This device listens for PGN 127502 (switch bank control) messages and broadcasts PGN 127501 (switch bank status) messages to maintain synchronization with Marine MFD displays.
+An ESP32-based NMEA 2000 switch bank controller that manages 4 relay outputs via CAN bus communication. This device listens for PGN 127502 (switch bank control) messages and broadcasts PGN 127501 (switch bank status) messages to maintain synchronization with Marine MFD displays.
 
 ## Features
 
-- 8-channel relay control via NMEA2000 CAN bus
+- 4-channel relay control via NMEA2000 CAN bus
 - C-Zone switch bank monitoring and piggyback control
 - Automatic stern light activation based on navigation and motor lights
 - Periodic status broadcasts for MFD synchronization
@@ -18,7 +18,7 @@ This firmware monitors a C-Zone Contact 6 Plus switch bank (Bank 1) and automati
 - **Navigation Light** (Bank 1, Switch 4): Controls mast navigation light
 - **Motor Light** (Bank 1, Switch 6): Controls motor light
 
-The stern light (connected to GPIO 12, relay index 2) is automatically turned **ON** when **either** the navigation light **OR** motor light is switched on. This provides automatic stern light control without requiring a separate switch.
+The stern light (relay 3, GPIO 12) is automatically turned **ON** when **either** the navigation light **OR** motor light is switched on. This provides automatic stern light control without requiring a separate switch.
 
 ### How It Works
 
@@ -27,23 +27,22 @@ The stern light (connected to GPIO 12, relay index 2) is automatically turned **
 3. Monitors switches 4 (navigation) and 6 (motor)
 4. Controls stern light relay with OR logic: `sternLight = navLight OR motorLight`
 5. Uses inverted GPIO logic (LOW = ON) due to optocoupler + high-side switch circuit
+6. Broadcasts PGN 127501 when the stern light changes, so the MFD shows its state
+
+The stern light is passive: it only follows C-Zone. PGN 127502 commands for switch 3 are ignored, and the device answers them with its actual status so the MFD snaps back.
 
 ## Hardware Configuration
 
 ### Relay Pin Mapping
 
-The firmware controls 8 relays mapped to specific ESP32 GPIO pins:
+The firmware controls 4 relays mapped to specific ESP32 GPIO pins:
 
 | Relay | GPIO | Purpose |
 |-------|------|---------|
 | 1 | 13 | Fan |
 | 2 | 5 | Autopilot |
 | 3 | **12** | **Stern Light (C-Zone Piggyback)** |
-| 4 | 23 | - |
-| 5 | 18 | - |
-| 6 | 26 | - |
-| 7 | 27 | - |
-| 8 | 36 | - |
+| 4 | 23 | Spare (not wired yet) |
 
 ### CAN Bus Connections
 
@@ -137,13 +136,13 @@ Edit `src/main.cpp` to modify device configuration:
 // Device identity
 #define BinaryDeviceInstance 0x03   // Instance for PGN 127501
 #define SwitchBankInstance 0x03     // Instance for PGN 127502
-#define NumberOfSwitches 8          // Total switches (change to 4 for 4-bit bank)
+#define NumberOfSwitches 4          // Number of relays
 
 // C-Zone piggyback configuration
 #define CZONE_BANK_INSTANCE 1       // C-Zone bank to monitor
 #define CZONE_NAV_LIGHT_SWITCH 4    // Navigation light switch number
 #define CZONE_MOTOR_LIGHT_SWITCH 6  // Motor light switch number
-#define STERN_LIGHT_RELAY_INDEX 2   // Relay index for stern light (0-based, relay 3)
+#define STERN_LIGHT_SWITCH 3        // Relay driven only by C-Zone (stern light)
 
 // Watchdog and recovery
 #define RECOVERY_RETRY_MS 1000      // CAN bus recovery retry interval
@@ -156,7 +155,7 @@ Edit `src/main.cpp` to modify device configuration:
 To change relay pin assignments, modify the `CzRelayPinMap` array:
 
 ```cpp
-uint8_t CzRelayPinMap[] = { 13, 5, 12, 23, 18, 26, 27, 36 };
+uint8_t CzRelayPinMap[NumberOfSwitches] = { 13, 5, 12, 23 };
 ```
 
 ## Technical Details
@@ -168,7 +167,9 @@ The firmware handles three types of PGN messages:
 1. **PGN 127502** (Switch Bank Control) - Incoming
    - Receives switch change requests from MFD
    - Only processes messages matching configured device instance
-   - Toggles relays and broadcasts updated status
+   - Sets each addressed relay to the commanded state (ON/OFF); switches marked unavailable are left alone
+   - Commands for the stern light (switch 3) are ignored
+   - Broadcasts updated status
 
 2. **PGN 127501** (Switch Bank Status) - Outgoing
    - Periodic broadcast every 10 seconds as "heartbeat"
@@ -182,12 +183,7 @@ The firmware handles three types of PGN messages:
 
 ### State Management
 
-The device maintains dual state tracking for compatibility:
-
-- `CzSwitchState1/2`: Internal relay states (8 bits across two bytes)
-- `CzMfdDisplaySyncState1/2`: MFD display sync states (specific bit patterns)
-
-Switch indices map to bit patterns: 0x01, 0x04, 0x10, 0x40 for positions 0, 1, 2, 3.
+`CzSwitchState[]` holds the actual state of each relay. All relay writes go through `WriteRelay()`, which handles the stern light's inverted logic, and PGN 127501 is built from that array, so the reported status always matches the relays.
 
 ### Event Loop (ReactESP)
 
@@ -255,7 +251,7 @@ The firmware implements automatic recovery from CAN bus-off conditions:
 
 **Solutions**:
 - For stern light (GPIO 12): Logic is intentionally inverted (LOW = ON) due to optocoupler circuit
-- For other relays: Modify logic in `SetChangeSwitchState()` function if using different driver circuits
+- For other relays: Modify logic in `WriteRelay()` if using different driver circuits
 
 ## Dependencies
 

@@ -19,24 +19,20 @@ ReactESP app;
 #define CzUpdatePeriod127501 10000
 #define BinaryDeviceInstance 0x03 // Instance of 127501 switch state message
 #define SwitchBankInstance 0x03   //Instance of 127502 change switch state message
-#define NumberOfSwitches 8   // change to 4 for bit switch bank
+#define NumberOfSwitches 4
 
 // C-Zone piggyback configuration
 #define CZONE_BANK_INSTANCE 1       // Bank instance for navigation and motor lights
 #define CZONE_NAV_LIGHT_SWITCH 4    // Switch 4 on C-Zone bank 1 (navigation light)
 #define CZONE_MOTOR_LIGHT_SWITCH 6  // Switch 6 on C-Zone bank 1 (motor light)
-#define STERN_LIGHT_RELAY_INDEX 2   // Index in CzRelayPinMap (3rd relay, GPIO 12)
+#define STERN_LIGHT_SWITCH 3        // Relay 3 (GPIO 12): driven only by C-Zone, ignores 127502 commands
 
 // List here messages your device will transmit.
 const unsigned long TransmitMessages[] PROGMEM = { 127501L, 127502L, 0 };
 
 // Global Variables
-uint8_t CzRelayPinMap[] = { 13, 5, 12, 23, 18, 26, 27, 36 }; // esp32 pins driving relays i.e CzRelayPinMap[0] returns the pin number of Relay 1
-tN2kBinaryStatus CzBankStatus;
-uint8_t CzSwitchState1 = 0;
-uint8_t CzSwitchState2 = 0;
-uint8_t CzMfdDisplaySyncState1 = 0;
-uint8_t CzMfdDisplaySyncState2 = 0;
+uint8_t CzRelayPinMap[NumberOfSwitches] = { 13, 5, 12, 23 }; // esp32 pins driving relays i.e CzRelayPinMap[0] returns the pin number of Relay 1
+bool CzSwitchState[NumberOfSwitches] = { false }; // current relay states, CzSwitchState[0] is Relay 1
 
 tNMEA2000 *nmea2000;
 
@@ -50,44 +46,40 @@ void ToggleLed() {
   led_state = !led_state;
 }
 
-void SetCZoneSwitchState127501(unsigned char DeviceInstance) {
+//*****************************************************************************
+// Drive a relay (SwitchIndex 1..NumberOfSwitches) and remember its state
+//*****************************************************************************
+void WriteRelay(uint8_t SwitchIndex, bool On) {
+    uint8_t Pin = CzRelayPinMap[SwitchIndex - 1];
+    if (SwitchIndex == STERN_LIGHT_SWITCH) {
+        // INVERTED logic: LOW = ON (optocoupler + high-side switch)
+        digitalWrite(Pin, On ? LOW : HIGH);
+    } else {
+        digitalWrite(Pin, On ? HIGH : LOW);
+    }
+    CzSwitchState[SwitchIndex - 1] = On;
+}
 
+// Broadcast the actual state of all relays (pgn 127501)
+void SendSwitchBankStatus127501() {
     tN2kMsg N2kMsg;
     tN2kBinaryStatus BankStatus;
     N2kResetBinaryStatus(BankStatus);
-    BankStatus = (BankStatus & CzMfdDisplaySyncState2) << 8; //
-    BankStatus = BankStatus | CzMfdDisplaySyncState1;
-    BankStatus = BankStatus | 0xffffffffffff0000ULL;
-    SetN2kPGN127501(N2kMsg, DeviceInstance, BankStatus);
-    nmea2000->SendMsg(N2kMsg);
-}
-
-void SetCZoneSwitchChangeRequest127502(unsigned char DeviceInstance, uint8_t SwitchIndex, bool ItemStatus)
-{
-    tN2kMsg N2kMsg;
-    N2kSetStatusBinaryOnStatus(CzBankStatus, ItemStatus ? N2kOnOff_On : N2kOnOff_Off, SwitchIndex);
-    //send out to other N2k switching devices on network ( pgn 127502 )
-    SetN2kPGN127502(N2kMsg, SwitchBankInstance, CzBankStatus);
-    nmea2000->SendMsg(N2kMsg);
-}
-
-//*****************************************************************************
-// Change the state of the relay requested and broadcast change to other N2K switching devices
-//*****************************************************************************
-
-void SetChangeSwitchState(uint8_t SwitchIndex, bool ItemStatus) {
-
-    // Set or reset the relay
-    if (ItemStatus) {
-        Serial.println("writing pin high");
-        digitalWrite(CzRelayPinMap[SwitchIndex - 1], HIGH); // adjust SwitchIndex to CzRelayPinMap value and set or reset
-    } else {
-        Serial.println("writing pin low");
-        digitalWrite(CzRelayPinMap[SwitchIndex - 1], LOW);
+    for (uint8_t i = 1; i <= NumberOfSwitches; i++) {
+        N2kSetStatusBinaryOnStatus(BankStatus, CzSwitchState[i - 1] ? N2kOnOff_On : N2kOnOff_Off, i);
     }
-    //send out change and status to other N2k devices on network
-    SetCZoneSwitchState127501(BinaryDeviceInstance);
-    SetCZoneSwitchChangeRequest127502(SwitchBankInstance, SwitchIndex, ItemStatus);
+    SetN2kPGN127501(N2kMsg, BinaryDeviceInstance, BankStatus);
+    nmea2000->SendMsg(N2kMsg);
+}
+
+// Send out a change of one switch to other N2k switching devices on network (pgn 127502)
+void SendSwitchChange127502(uint8_t SwitchIndex, bool On) {
+    tN2kMsg N2kMsg;
+    tN2kBinaryStatus BankStatus;
+    N2kResetBinaryStatus(BankStatus);
+    N2kSetStatusBinaryOnStatus(BankStatus, On ? N2kOnOff_On : N2kOnOff_Off, SwitchIndex);
+    SetN2kPGN127502(N2kMsg, SwitchBankInstance, BankStatus);
+    nmea2000->SendMsg(N2kMsg);
 }
 
 //*****************************************************************************
@@ -115,74 +107,43 @@ void ParseCZoneSwitchState(const tN2kMsg& N2kMsg) {
         bool motorLightOn = N2kCZoneIsSwitchOn(Status, CZONE_MOTOR_LIGHT_SWITCH);
         bool sternLightShouldBeOn = navLightOn || motorLightOn;
 
-        // Control stern light relay based on nav OR motor light state
-        // INVERTED logic: LOW = ON (optocoupler + high-side switch)
-        digitalWrite(CzRelayPinMap[STERN_LIGHT_RELAY_INDEX], sternLightShouldBeOn ? LOW : HIGH);
+        if (sternLightShouldBeOn == CzSwitchState[STERN_LIGHT_SWITCH - 1]) return; // no change
 
-        Serial.printf("PIGGYBACK: Nav=%s Motor=%s -> Stern light %s (GPIO %d = %s)\n",
+        WriteRelay(STERN_LIGHT_SWITCH, sternLightShouldBeOn);
+        SendSwitchBankStatus127501(); // keep MFD display in sync
+
+        Serial.printf("PIGGYBACK: Nav=%s Motor=%s -> Stern light %s (GPIO %d)\n",
                       navLightOn ? "ON" : "OFF",
                       motorLightOn ? "ON" : "OFF",
                       sternLightShouldBeOn ? "ON" : "OFF",
-                      CzRelayPinMap[STERN_LIGHT_RELAY_INDEX],
-                      sternLightShouldBeOn ? "LOW" : "HIGH");
+                      CzRelayPinMap[STERN_LIGHT_SWITCH - 1]);
     }
 }
 
-void ParseN2kPGN127502(const tN2kMsg& N2kMsg) {
-    tN2kOnOff State;
-    unsigned char ChangeIndex;
-    int Index = 0;
-    uint8_t DeviceBankInstance = N2kMsg.GetByte(Index);
-    if (N2kMsg.PGN != 127502L || DeviceBankInstance  != BinaryDeviceInstance) return; //Nothing to see here
-    uint16_t BankStatus = N2kMsg.Get2ByteUInt (Index);
-    //Serial.println(BankStatus);
-    for (ChangeIndex = 0; ChangeIndex < NumberOfSwitches; ChangeIndex++) {
+//*****************************************************************************
+// Set the relays to the states requested in a 127502 switch bank control message
+//*****************************************************************************
+void HandleSwitchBankControl(const tN2kMsg& N2kMsg) {
+    unsigned char TargetBankInstance;
+    tN2kBinaryStatus BankStatus;
+    if (!ParseN2kPGN127502(N2kMsg, TargetBankInstance, BankStatus) || TargetBankInstance != SwitchBankInstance) return; //Nothing to see here
 
-        State = (tN2kOnOff)(BankStatus & 0x03);
-        if (State != N2kOnOff_Unavailable) break; // index (0 to 7) found for switch and state
-        BankStatus >>= 2;
+    bool addressed = false;
+    for (uint8_t i = 1; i <= NumberOfSwitches; i++) {
+        tN2kOnOff State = N2kGetStatusOnBinaryStatus(BankStatus, i);
+        if (State != N2kOnOff_On && State != N2kOnOff_Off) continue; // switch not part of this command
+        addressed = true;
+        if (i == STERN_LIGHT_SWITCH) {
+            Serial.println("Ignoring 127502 for stern light: it follows C-Zone only");
+            continue;
+        }
+        bool On = (State == N2kOnOff_On);
+        Serial.printf("Switch %d -> %s\n", i, On ? "ON" : "OFF");
+        WriteRelay(i, On);
+        SendSwitchChange127502(i, On);
     }
-    Serial.println(ChangeIndex );
-    Serial.println(State);
-
-    switch (ChangeIndex) {
-
-      case 0x00:  CzSwitchState1 ^= 0x01; // toggle state of the of switch bit
-          CzMfdDisplaySyncState1 ^= 0x01; // toggle state of the of switch bit for MDF display sync
-          SetChangeSwitchState(1, CzSwitchState1 & 0x01); // send the change out
-          break;
-
-      case 0x01:  CzSwitchState1 ^= 0x02;
-          CzMfdDisplaySyncState1 ^= 0x04;
-          SetChangeSwitchState(2, CzSwitchState1 & 0x02); // send the change out
-          break;
-
-      case 0x02:  CzSwitchState1 ^= 0x04;
-          CzMfdDisplaySyncState1 ^= 0x10;
-          SetChangeSwitchState(3, CzSwitchState1 & 0x04); // send the change out
-          break;
-
-      case 0x03:  CzSwitchState1 ^= 0x08;
-          CzMfdDisplaySyncState1 ^= 0x40;
-          SetChangeSwitchState(4, CzSwitchState1 & 0x08); // send the change out
-          break;
-          // second 4 switches 
-      case 0x04:  CzSwitchState2 ^= 0x01; // state of the four switches
-          CzMfdDisplaySyncState2 ^= 0x01; // for MDF display sync
-          SetChangeSwitchState(5, CzSwitchState2 & 0x01); // send the change out
-          break;
-      case 0x05:  CzSwitchState2 ^= 0x02;
-          CzMfdDisplaySyncState2 ^= 0x04;
-          SetChangeSwitchState(6, CzSwitchState2 & 0x02); // send the change out
-          break;
-      case 0x06:  CzSwitchState2 ^= 0x04;
-          CzMfdDisplaySyncState2 ^= 0x10;
-          SetChangeSwitchState(7, CzSwitchState2 & 0x04); // send the change out
-          break;
-      case 0x07:  CzSwitchState2 ^= 0x08;
-          CzMfdDisplaySyncState2 ^= 0x40;
-          SetChangeSwitchState(8, CzSwitchState2 & 0x08); // send the change out
-    }
+    // Always report the real state, so the MFD snaps back if a command was ignored
+    if (addressed) SendSwitchBankStatus127501();
 }
 
 void HandleStreamN2kMsg(const tN2kMsg &message) {
@@ -191,7 +152,7 @@ void HandleStreamN2kMsg(const tN2kMsg &message) {
   time_since_last_can_rx = 0;
   ToggleLed();
   ParseCZoneSwitchState(message);  // Parse C-Zone messages
-  ParseN2kPGN127502(message);       // Parse standard NMEA switch bank messages
+  HandleSwitchBankControl(message); // Parse standard NMEA switch bank messages
 }
 
 void RecoverFromCANBusOff() {
@@ -226,7 +187,7 @@ void SendN2k(void)
 
     if (CzUpdate127501 + CzUpdatePeriod127501 < millis()) {
         CzUpdate127501 = millis();
-        SetCZoneSwitchState127501(BinaryDeviceInstance);
+        SendSwitchBankStatus127501();
     }
 }
 
@@ -256,25 +217,16 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   app.onRepeatMicros(1e6 / 1, []() { ToggleLed(); });
 
-  // Initialize relay outputs
-  pinMode(CzRelayPinMap[0], OUTPUT);
-  digitalWrite(CzRelayPinMap[0], LOW);
+  // Initialize relay outputs, all off. Set the level before enabling the
+  // output so the inverted stern light relay doesn't flash on at boot.
+  for (uint8_t i = 1; i <= NumberOfSwitches; i++) {
+    WriteRelay(i, false);
+    pinMode(CzRelayPinMap[i - 1], OUTPUT);
+  }
+  Serial.printf("Stern light relay %d on GPIO %d follows C-Zone (inverted logic)\n",
+                STERN_LIGHT_SWITCH, CzRelayPinMap[STERN_LIGHT_SWITCH - 1]);
 
-  pinMode(CzRelayPinMap[1], OUTPUT);
-  digitalWrite(CzRelayPinMap[1], LOW);
-
-  // Initialize stern light relay (used for C-Zone piggyback)
-  // Start with HIGH (OFF state due to inverted logic: optocoupler + high-side switch)
-  pinMode(CzRelayPinMap[STERN_LIGHT_RELAY_INDEX], OUTPUT);
-  digitalWrite(CzRelayPinMap[STERN_LIGHT_RELAY_INDEX], HIGH);
-
-  Serial.printf("Stern light relay initialized on GPIO %d (relay index %d) - inverted logic\n",
-                CzRelayPinMap[STERN_LIGHT_RELAY_INDEX], STERN_LIGHT_RELAY_INDEX + 1);
-
-
-  // initialize initial switch state
   nmea2000 = new tNMEA2000_esp32(CAN_TX_PIN, CAN_RX_PIN);
-  N2kResetBinaryStatus(CzBankStatus);
 
   // setup the N2k parameters
   nmea2000->SetN2kCANSendFrameBufSize(250);
