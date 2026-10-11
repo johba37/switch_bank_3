@@ -4,7 +4,6 @@
 #include <N2kMsg.h>
 #include <N2kCZone.h>
 #include <ReactESP.h>
-#include <esp_int_wdt.h>
 #include <esp_task_wdt.h>
 #include "elapsedMillis.h"
 
@@ -29,11 +28,7 @@ ReactESP app;
 #define STERN_LIGHT_RELAY_INDEX 2   // Index in CzRelayPinMap (3rd relay, GPIO 12)
 
 // List here messages your device will transmit.
-const unsigned long TransmitMessages[] PROGMEM = { 127502L,130813L,0 };
-
-// Function prototypes
-void SetN2kSwitchBankCommand(tN2kMsg& , unsigned char , tN2kBinaryStatus);
-
+const unsigned long TransmitMessages[] PROGMEM = { 127501L, 127502L, 0 };
 
 // Global Variables
 uint8_t CzRelayPinMap[] = { 13, 5, 12, 23, 18, 26, 27, 36 }; // esp32 pins driving relays i.e CzRelayPinMap[0] returns the pin number of Relay 1
@@ -70,15 +65,10 @@ void SetCZoneSwitchState127501(unsigned char DeviceInstance) {
 void SetCZoneSwitchChangeRequest127502(unsigned char DeviceInstance, uint8_t SwitchIndex, bool ItemStatus)
 {
     tN2kMsg N2kMsg;
-    //N2kResetBinaryStatus(CzBankStatus);
     N2kSetStatusBinaryOnStatus(CzBankStatus, ItemStatus ? N2kOnOff_On : N2kOnOff_Off, SwitchIndex);
     //send out to other N2k switching devices on network ( pgn 127502 )
-    SetN2kSwitchBankCommand(N2kMsg, SwitchBankInstance, CzBankStatus);
+    SetN2kPGN127502(N2kMsg, SwitchBankInstance, CzBankStatus);
     nmea2000->SendMsg(N2kMsg);
-}
-void SetN2kSwitchBankCommand(tN2kMsg& N2kMsg, unsigned char DeviceBankInstance, tN2kBinaryStatus BankStatus)
-{
-    SetN2kPGN127502(N2kMsg, DeviceBankInstance, BankStatus);
 }
 
 //*****************************************************************************
@@ -227,7 +217,7 @@ void RecoverFromCANBusOff() {
   MODULE_CAN->MOD.B.RM = 0;
 }
 
-// send periodic updates to maintain sync and as a "heatbeat" to the MFD
+// send periodic updates to maintain sync and as a "heartbeat" to the MFD
 
 void SendN2k(void)
 {
@@ -282,18 +272,17 @@ void setup() {
                 CzRelayPinMap[STERN_LIGHT_RELAY_INDEX], STERN_LIGHT_RELAY_INDEX + 1);
 
 
-  // // initialize intitial switch state
+  // initialize initial switch state
   nmea2000 = new tNMEA2000_esp32(CAN_TX_PIN, CAN_RX_PIN);
   N2kResetBinaryStatus(CzBankStatus);
 
-  // // setup the N2k parameters
+  // setup the N2k parameters
   nmea2000->SetN2kCANSendFrameBufSize(250);
   nmea2000->SetN2kCANReceiveFrameBufSize(250);
-  // //Set Product information
+  // Set product information
   nmea2000->SetProductInformation("00260001", 0001, "Switch Bank 3", "1.000 06/04/21", "My Yacht 8 Bit ");
-  // // Set device information
+  // Set device information
   nmea2000->SetDeviceInformation(260001, 140, 30, 717);
-  // // NMEA2000.SetForwardStream(&Serial);
   nmea2000->SetMode(tNMEA2000::N2km_ListenAndNode, 169);
   nmea2000->SetForwardOwnMessages(false);  // do not echo own messages.
   nmea2000->ExtendTransmitMessages(TransmitMessages);
