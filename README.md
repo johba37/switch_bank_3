@@ -189,7 +189,8 @@ The firmware handles three types of PGN messages:
 
 - **1ms interval**: Parse NMEA messages and poll CAN bus status
 - **100ms interval**: Check for CAN RX timeout (triggers watchdog reboot if no messages for 30s)
-- **1 second interval**: Debug output and periodic status broadcasts
+- **1 second interval**: Debug output
+- **10 second interval**: PGN 127501 status heartbeat
 
 ### CAN Bus Recovery
 

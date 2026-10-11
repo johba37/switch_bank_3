@@ -36,7 +36,7 @@ The default environment is `esp32dev` targeting an ESP32 development board.
    - Commands for relay 3 (`STERN_LIGHT_SWITCH`) are ignored: it follows C-Zone only
 
 2. **PGN 127501** (outgoing): Switch bank status
-   - Sent periodically every 10 seconds as a "heartbeat" via `SendN2k()`
+   - Sent periodically every 10 seconds as a "heartbeat" (own ReactESP timer)
    - Also sent immediately after any switch state change
    - Built from `CzSwitchState[]`, so it always reports the actual relay states
 
@@ -53,7 +53,8 @@ The default environment is `esp32dev` targeting an ESP32 development board.
 Uses ReactESP for event-driven programming:
 - 1ms interval: Parse NMEA messages and poll CAN bus status
 - 100ms interval: Check for CAN RX timeout (reboots if no messages for 30s)
-- 1s interval: Debug output and periodic status broadcasts
+- 1s interval: Debug output
+- 10s interval: PGN 127501 status heartbeat
 
 ### CAN Bus Recovery
 

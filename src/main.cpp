@@ -178,19 +178,6 @@ void RecoverFromCANBusOff() {
   MODULE_CAN->MOD.B.RM = 0;
 }
 
-// send periodic updates to maintain sync and as a "heartbeat" to the MFD
-
-void SendN2k(void)
-{
-    static unsigned long CzUpdate127501 = millis();
-
-
-    if (CzUpdate127501 + CzUpdatePeriod127501 < millis()) {
-        CzUpdate127501 = millis();
-        SendSwitchBankStatus127501();
-    }
-}
-
 void PollCANStatus() {
   // CAN controller registers are SJA1000 compatible.
   // Bus status value 0 indicates bus-on; value 1 indicates bus-off.
@@ -263,9 +250,10 @@ void setup() {
     Serial.printf("Uptime: %lu\n", millis() / 1000);
     Serial.printf("RX: %d\n", num_n2k_messages);
     num_n2k_messages = 0;
-
-    SendN2k();
   });
+
+  // send periodic updates to maintain sync and as a "heartbeat" to the MFD
+  app.onRepeat(CzUpdatePeriod127501, []() { SendSwitchBankStatus127501(); });
 }
 
 
