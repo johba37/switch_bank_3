@@ -259,20 +259,23 @@ The firmware implements automatic recovery from CAN bus-off conditions:
 
 ## Dependencies
 
-- **NMEA2000**: Latest version from GitHub (includes C-Zone parsing support)
-- **NMEA2000_esp32**: ESP32-specific NMEA 2000 implementation
-- **ReactESP**: Event-driven programming framework
-- **elapsedMillis**: Efficient time tracking library
+- **NMEA2000** 4.24.1: first registry release that includes C-Zone parsing support ([PR #469](https://github.com/ttlappalainen/NMEA2000/pull/469))
+- **NMEA2000_esp32** 1.0.3: ESP32-specific NMEA 2000 implementation
+- **ReactESP** 2.1.0: Event-driven programming framework
+- **elapsedMillis** 1.0.6: Efficient time tracking library
 
-The NMEA2000 library is installed directly from GitHub to include the latest C-Zone support (PR #469):
+All dependencies, including the platform, are pinned to exact versions so rebuilds reproduce the firmware on the boat:
 
 ```ini
+platform = espressif32@6.12.0
 lib_deps =
-    mairas/ReactESP@^2.0.0
-    https://github.com/ttlappalainen/NMEA2000.git
-    ttlappalainen/NMEA2000_esp32
-    pfeerick/elapsedMillis
+    mairas/ReactESP@2.1.0
+    ttlappalainen/NMEA2000-library@4.24.1
+    ttlappalainen/NMEA2000_esp32@1.0.3
+    pfeerick/elapsedMillis@1.0.6
 ```
+
+Don't bump `espressif32` to 7.x or ReactESP to 3.x without porting: espressif32 7.x moves to Arduino core 3 / ESP-IDF 5, which breaks the CAN driver and the bus-off recovery code, and ReactESP 3.x changes its API.
 
 ## License
 
