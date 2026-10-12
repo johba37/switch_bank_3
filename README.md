@@ -5,32 +5,33 @@ An ESP32-based NMEA 2000 switch bank controller that manages 4 relay outputs via
 ## Features
 
 - 4-channel relay control via NMEA2000 CAN bus
-- C-Zone switch bank monitoring and piggyback control
-- Automatic stern light activation based on navigation and motor lights
+- Stern light as a plain switch; COLREG coupling to sidelights and red over green done by a Pi plugin
 - Engine room fan speed control (PGN 127500) with RPM feedback (PGN 127488) and failsafe
 - Periodic status broadcasts for MFD synchronization
 - Automatic CAN bus recovery from bus-off conditions
 - Watchdog-based system recovery if CAN communication fails
 
-## C-Zone Piggyback Functionality
+## Navigation Lights
 
-This firmware monitors a C-Zone Contact 6 Plus switch bank (Bank 1) and automatically controls a stern light relay based on two C-Zone switches:
+The stern light is a plain switch of this board (bank 3, switch 3). The COLREG logic lives on the Pi in the [`signalk-nav-lights`](signalk-nav-lights/) Signal K plugin, so the board knows nothing about other lights:
 
-- **Navigation Light** (Bank 1, Switch 4): Controls mast navigation light
-- **Motor Light** (Bank 1, Switch 6): Controls motor light
+| Light | Switched by |
+|---|---|
+| Red over green, masthead (COLREG 25(c)) | C-Zone bank 1 switch 4 |
+| Deck level sidelights | kiosk "Nav lights" = switch bank 4 switch 1 |
+| Stern light | this board, bank 3 switch 3, set by the plugin |
+| Anchor light | C-Zone bank 1 switch 5 (not touched) |
+| Motor light | C-Zone bank 1 switch 6 (not touched) |
 
-The stern light (relay 3, GPIO 12) is automatically turned **ON** when **either** the navigation light **OR** motor light is switched on. This provides automatic stern light control without requiring a separate switch.
+The plugin:
 
-### How It Works
+- keeps the **stern light on while the sidelights or red over green are on**
+- switches the **sidelights on with red over green**, keeps them on while it is on, and **restores them** to how they were when red over green goes off
+- reads C-Zone from PGN 65284 (canboatjs decodes it as "CZone Circuit Status": `dipswitch` = bank, `bitmap` bit n-1 = switch n)
+- re-sends a command until the bank's 127501 status agrees, so the stern light comes back after the board reboots
+- publishes `electrical.navigationLights.redOverGreen`, `.sidelights`, `.sternLight`
 
-1. The ESP32 listens to C-Zone proprietary PGNs (65284 and 65301) on the NMEA2000 network
-2. Parses switch state messages from Bank 1
-3. Monitors switches 4 (navigation) and 6 (motor)
-4. Controls stern light relay with OR logic: `sternLight = navLight OR motorLight`
-5. Uses inverted GPIO logic (LOW = ON) due to optocoupler + high-side switch circuit
-6. Broadcasts PGN 127501 when the stern light changes, so the MFD shows its state
-
-The stern light is passive: it only follows C-Zone. PGN 127502 commands for switch 3 are ignored, and the device answers them with its actual status so the MFD snaps back.
+Deploy: copy the folder to `~/.signalk/node_modules/` on the Pi and restart Signal K.
 
 ## Engine Room Fans
 
@@ -82,7 +83,8 @@ The control logic lives in a small Signal K plugin on the Pi, kept in [`signalk-
 - while on, sends a duty every 5 s: `minDuty` (30 %) at `fansOnTemp`, rising linearly to 100 % at `fullSpeedTemp` (45 °C), to keep the electric motor below 50 °C
 - re-sends the relay command until the 127501 status agrees, so the fans come back after a board reboot
 - switches the fans on and stops sending duty if the temperature is stale for 60 s, so the board's 100 % failsafe takes over
-- publishes `electrical.fans.engineRoom.*`: `state`, `commandedDutyCycle`, and decoded from the board's 127500 status `dutyCycle`, `failsafe`, `powered`
+- **manual mode**: switching the fans on by hand (kiosk "Blower", 127502 bank 3 switch 1 ON) while they are off runs them at `manualDuty` (50 %), or faster if the curve asks for more, until switched off. Switching off ends manual mode, but above `fansOnTemp` the fans stay on
+- publishes `electrical.fans.engineRoom.*`: `state`, `mode` (auto/manual), `commandedDutyCycle`, and decoded from the board's 127500 status `dutyCycle`, `failsafe`, `powered`
 
 All thresholds are configurable in the Signal K admin UI (Server → Plugin Config → Engine room fans).
 
@@ -98,7 +100,7 @@ The firmware controls 4 relays mapped to specific ESP32 GPIO pins:
 |-------|------|---------|
 | 1 | 13 | Engine room fans power |
 | 2 | 5 | Autopilot |
-| 3 | **12** | **Stern Light (C-Zone Piggyback)** |
+| 3 | 12 | Stern light (set by the `nav-lights` Pi plugin) |
 | 4 | 23 | Spare (not wired yet) |
 
 ### CAN Bus Connections
@@ -109,7 +111,7 @@ The firmware controls 4 relays mapped to specific ESP32 GPIO pins:
 
 ### Stern Light Control Circuit
 
-The stern light relay (GPIO 12) uses an optocoupler-isolated high-side switch for safe load control:
+The stern light (GPIO 12) uses an optocoupler-isolated high-side switch. GPIO HIGH lights the optocoupler LED, its transistor pulls the BTS6163D input to load ground, and that switches the light **on**:
 
 ```
 ESP32 GPIO 12 ──┬── 220Ω ──┬─→ SFH615A Pin 1 (Anode)
@@ -143,7 +145,7 @@ BTS6163D Pin 7 ─→ 1kΩ ─→ GND_LOAD (current sense)
 
 - **BTS6163D Pins 1 & 5 must be shorted together** and connected to +12V supply
 - Ground separation: ESP32 ground (GND_ESP32) and load ground (GND_LOAD) are isolated by the optocoupler
-- **Inverted logic**: GPIO LOW = Stern light ON, GPIO HIGH = OFF
+- **Logic**: GPIO HIGH = stern light ON, GPIO LOW = OFF, like all other relays
 - BTS6163D provides overcurrent, thermal, and overvoltage protection
 
 ## Build and Deployment
@@ -195,11 +197,7 @@ Edit `src/main.cpp` to modify device configuration:
 #define SwitchBankInstance 0x03     // Instance for PGN 127502
 #define NumberOfSwitches 4          // Number of relays
 
-// C-Zone piggyback configuration
-#define CZONE_BANK_INSTANCE 1       // C-Zone bank to monitor
-#define CZONE_NAV_LIGHT_SWITCH 4    // Navigation light switch number
-#define CZONE_MOTOR_LIGHT_SWITCH 6  // Motor light switch number
-#define STERN_LIGHT_SWITCH 3        // Relay driven only by C-Zone (stern light)
+#define FAN_POWER_SWITCH 1          // Relay switching the engine room fans
 
 // Watchdog and recovery
 #define RECOVERY_RETRY_MS 1000      // CAN bus recovery retry interval
@@ -219,13 +217,12 @@ uint8_t CzRelayPinMap[NumberOfSwitches] = { 13, 5, 12, 23 };
 
 ### NMEA2000 Messages
 
-The firmware handles three types of PGN messages:
+The firmware handles these PGN messages:
 
 1. **PGN 127502** (Switch Bank Control) - Incoming
    - Receives switch change requests from MFD
    - Only processes messages matching configured device instance
    - Sets each addressed relay to the commanded state (ON/OFF); switches marked unavailable are left alone
-   - Commands for the stern light (switch 3) are ignored
    - Broadcasts updated status
 
 2. **PGN 127501** (Switch Bank Status) - Outgoing
@@ -233,14 +230,11 @@ The firmware handles three types of PGN messages:
    - Sent immediately after any switch state change
    - Maintains synchronization with MFD displays
 
-3. **PGN 65284/65301** (C-Zone Switch Status) - Incoming
-   - Proprietary C-Zone switch state messages
-   - Parsed to extract navigation and motor light states
-   - Triggers automatic stern light control
+3. **PGN 127500 / 127488** - fan speed and RPM, see [Engine Room Fans](#engine-room-fans)
 
 ### State Management
 
-`CzSwitchState[]` holds the actual state of each relay. All relay writes go through `WriteRelay()`, which handles the stern light's inverted logic, and PGN 127501 is built from that array, so the reported status always matches the relays.
+`CzSwitchState[]` holds the actual state of each relay. All relay writes go through `WriteRelay()`, and PGN 127501 is built from that array, so the reported status always matches the relays.
 
 ### Event Loop (ReactESP)
 
@@ -294,22 +288,22 @@ The firmware implements automatic recovery from CAN bus-off conditions:
 
 ### Stern Light Not Responding
 
-**Symptoms**: C-Zone switches toggle but stern light doesn't activate
+**Symptoms**: Sidelights or red over green are on, but the stern light isn't
 
 **Solutions**:
-1. Check wiring between GPIO 12 and optocoupler
-2. Verify BTS6163D pins 1&5 are shorted and connected to +12V
-3. Confirm ground separation (GND_ESP32 vs GND_LOAD)
-4. Test optocoupler: Measure voltage at SFH615A pin 3 (should be ~0V when GPIO 12 is LOW)
-5. Check serial output for debug messages: `PIGGYBACK: Nav=... Motor=... -> Stern light...`
+1. Check `electrical.switches.bank.3.3.state` in Signal K: if it is 1, the logic works and the problem is in the circuit
+2. Check the `Navigation lights` plugin status in the Signal K admin UI
+3. Check wiring between GPIO 12 and optocoupler
+4. Verify BTS6163D pins 1&5 are shorted and connected to +12V
+5. Confirm ground separation (GND_ESP32 vs GND_LOAD)
+6. Test optocoupler: Measure voltage at SFH615A pin 3 (should be ~0V when GPIO 12 is HIGH)
 
 ### Inverted Relay Logic
 
 **Symptoms**: Relay turns on when it should be off and vice versa
 
 **Solutions**:
-- For stern light (GPIO 12): Logic is intentionally inverted (LOW = ON) due to optocoupler circuit
-- For other relays: Modify logic in `WriteRelay()` if using different driver circuits
+- All relays are active HIGH. For a driver circuit that switches on with LOW, invert that relay in `WriteRelay()`
 
 ## Dependencies
 

@@ -1,0 +1,12 @@
+{
+  "name": "signalk-nav-lights",
+  "version": "1.0.0",
+  "description": "Couples stern light and deck sidelights to the red over green (C-Zone) and the kiosk Nav lights switch, as COLREG requires",
+  "main": "index.js",
+  "keywords": [
+    "signalk-node-server-plugin",
+    "signalk-category-utility"
+  ],
+  "license": "Apache-2.0",
+  "private": true
+}

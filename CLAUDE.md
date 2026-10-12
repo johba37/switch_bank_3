@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an ESP32-based NMEA 2000 switch bank controller that manages 4 relay outputs via CAN bus communication. The device listens for PGN 127502 (switch bank control) messages and broadcasts PGN 127501 (switch bank status) messages to maintain synchronization with Marine MFD displays. It also listens to C-Zone switch status (PGN 65284/65301) and drives the stern light (relay 3) when C-Zone bank 1 switch 4 (nav light) or switch 6 (motor light) is on.
+This is an ESP32-based NMEA 2000 switch bank controller that manages 4 relay outputs via CAN bus communication. The device listens for PGN 127502 (switch bank control) messages and broadcasts PGN 127501 (switch bank status) messages to maintain synchronization with Marine MFD displays. It also drives the engine room fans (PWM speed + tach). Coupling logic (fan speed from motor temperature, stern light with sidelights/red over green) lives in Signal K plugins on the Pi, in `signalk-engine-room-fans/` and `signalk-nav-lights/`; the board only executes and reports.
 
 ## Build System
 
@@ -23,7 +23,7 @@ The default environment is `esp32dev` targeting an ESP32 development board.
 - **CAN Bus Pins**: RX on GPIO 34, TX on GPIO 32
 - **Relay Pin Mapping**: Array `CzRelayPinMap[]` in src/main.cpp defines which GPIO pins control which relays
   - Relay 1-4 are mapped to GPIOs: 13 (fan power), 5 (autopilot), 12 (stern light), 23 (spare)
-  - Relay 3 (stern light) uses inverted logic: LOW = ON (optocoupler + high-side switch)
+  - All relays are active HIGH (the stern light's optocoupler + BTS6163D circuit too)
 - **Fans** (src/fan.cpp): PWM for both fans on GPIO 25 (25 kHz), tach inputs on GPIO 26/27 (PCNT units 0/1)
 - **Built-in LED**: GPIO 2 (toggles on CAN message reception)
 
@@ -34,27 +34,22 @@ The default environment is `esp32dev` targeting an ESP32 development board.
 1. **PGN 127502** (incoming): Switch bank control commands
    - Handled in `HandleSwitchBankControl()`; only messages for `SwitchBankInstance` (0x03)
    - Sets each addressed relay to the commanded state (not a toggle)
-   - Commands for relay 3 (`STERN_LIGHT_SWITCH`) are ignored: it follows C-Zone only
 
 2. **PGN 127501** (outgoing): Switch bank status
    - Sent periodically every 10 seconds as a "heartbeat" (own ReactESP timer)
    - Also sent immediately after any switch state change
    - Built from `CzSwitchState[]`, so it always reports the actual relay states
 
-3. **PGN 65284/65301** (incoming): C-Zone switch status
-   - Parsed in `ParseCZoneSwitchState()` via `N2kCZone.h` from the NMEA2000 library
-   - Stern light = C-Zone bank 1 switch 4 (nav) OR switch 6 (motor)
-
-4. **PGN 127500** (incoming/outgoing): fan speed, in src/fan.cpp
+3. **PGN 127500** (incoming/outgoing): fan speed, in src/fan.cpp
    - Incoming with Connection ID 1: byte 5 = PWM duty 0-100 %, sent periodically by the Pi
    - Failsafe: 100 % if no duty since boot or for 30 s
    - Outgoing every 1 s: state, failsafe status and applied duty
 
-5. **PGN 127488** (outgoing): fan RPM every 1 s as engine instances 2 and 3 (`propulsion.2/3.revolutions` in Signal K)
+4. **PGN 127488** (outgoing): fan RPM every 1 s as engine instances 2 and 3 (`propulsion.2/3.revolutions` in Signal K)
 
 ### State Management
 
-`CzSwitchState[]` holds the state of each relay. All relay writes go through `WriteRelay()`, which applies the stern light's inverted logic and updates the state array.
+`CzSwitchState[]` holds the state of each relay. All relay writes go through `WriteRelay()`, which updates the state array and tells the fan code about relay 1.
 
 ### Event Loop
 
@@ -76,7 +71,7 @@ Implements automatic recovery from CAN bus-off state (`RecoverFromCANBusOff()`):
 
 All versions are pinned in platformio.ini. Don't bump espressif32 to 7.x (Arduino core 3 / IDF 5 breaks the CAN driver and bus-off recovery) or ReactESP to 3.x (API change) without porting.
 
-- **NMEA2000-library 4.24.1**: message encoding/decoding, incl. C-Zone (`N2kCZone.h`)
+- **NMEA2000-library 4.24.1**: message encoding/decoding
 - **NMEA2000_esp32**: ESP32-specific NMEA 2000 implementation
 - **ReactESP 2.x**: Event-driven programming framework
 

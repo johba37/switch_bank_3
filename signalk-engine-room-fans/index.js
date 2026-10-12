@@ -13,6 +13,12 @@
 //   - keeps re-sending the relay command until the bank's 127501 status agrees,
 //     so the fans come back after the board reboots (relay 1 boots off)
 //
+// Manual mode: switching the fans on from elsewhere (the kiosk "Blower"
+// button sends 127502 bank 3 switch 1 ON) while they are off starts manual
+// mode: fans stay on at `manualDuty`, or faster if the curve asks for more,
+// until an OFF command for the switch arrives. The curve still wins on safety:
+// above `fansOnTemp` an OFF ends manual mode, but the fans stay on.
+//
 // Failsafes: the board runs the fans at 100 % when it gets no duty for 30 s.
 // If the temperature goes stale, this plugin switches the fans on and stops
 // sending duty, so the board falls back to full speed.
@@ -28,7 +34,9 @@ module.exports = function (app) {
   let timer = null
   let onN2k = null
   let options = {}
-  let fansOn = false
+  let fansOn = false        // relay wanted on
+  let autoOn = false        // temperature curve wants the fans on (with hysteresis)
+  let manual = false        // switched on by hand, until an OFF command
   let lastTemp = null       // °C
   let lastTempAt = 0        // ms
   let lastStatusLog = ''
@@ -47,6 +55,7 @@ module.exports = function (app) {
         fansOffTemp: { type: 'number', title: 'Fans off below (°C)', default: 22 },
         fullSpeedTemp: { type: 'number', title: 'Full speed at (°C)', default: 45 },
         minDuty: { type: 'number', title: 'Minimum duty while on (%)', default: 30 },
+        manualDuty: { type: 'number', title: 'Manual mode duty (%), when switched on by hand', default: 50 },
         staleTimeout: { type: 'number', title: 'Temperature stale after (s): fans on at full speed', default: 60 },
         sendInterval: { type: 'number', title: 'Send interval (s), must be well below the board\'s 30 s timeout', default: 5 },
         switchBank: { type: 'number', title: 'Switch bank instance', default: 3 },
@@ -61,6 +70,8 @@ module.exports = function (app) {
   function start (opts) {
     options = Object.assign(defaults(), opts)
     fansOn = false
+    autoOn = false
+    manual = false
     lastTemp = null
     lastTempAt = Date.now() // grace period before declaring the temperature stale
 
@@ -71,7 +82,8 @@ module.exports = function (app) {
           { path: OUT_PATH + '.dutyCycle', value: { units: 'ratio', description: 'Fan duty applied by the board' } },
           { path: OUT_PATH + '.failsafe', value: { description: 'Board runs fans at full speed because no duty was received' } },
           { path: OUT_PATH + '.powered', value: { description: 'Fan power relay as reported by the board' } },
-          { path: OUT_PATH + '.state', value: { description: 'Fan power wanted by this plugin (on/off)' } }
+          { path: OUT_PATH + '.state', value: { description: 'Fan power wanted by this plugin (on/off)' } },
+          { path: OUT_PATH + '.mode', value: { description: 'auto: temperature curve, manual: switched on by hand until switched off' } }
         ]
       }]
     })
@@ -129,23 +141,30 @@ module.exports = function (app) {
     readTemperature()
     const stale = Date.now() - lastTempAt > options.staleTimeout * 1000
 
-    let duty = null
-    if (stale) {
-      fansOn = true // no duty sent: the board falls back to 100 %
-    } else {
-      if (lastTemp >= options.fansOnTemp) fansOn = true
-      else if (lastTemp < options.fansOffTemp) fansOn = false
-      if (fansOn) duty = dutyFor(lastTemp)
+    if (!stale) {
+      if (lastTemp >= options.fansOnTemp) autoOn = true
+      else if (lastTemp < options.fansOffTemp) autoOn = false
+    }
+    fansOn = stale || autoOn || manual
+
+    let duty = null // stale: no duty sent, the board falls back to 100 %
+    if (!stale && fansOn) {
+      duty = Math.max(autoOn ? dutyFor(lastTemp) : 0, manual ? options.manualDuty : 0)
     }
 
     syncRelay()
     if (duty !== null) sendDuty(duty)
 
-    publish({ commandedDutyCycle: duty === null ? null : duty / 100, state: fansOn ? 'on' : 'off' })
+    publish({
+      commandedDutyCycle: duty === null ? null : duty / 100,
+      state: fansOn ? 'on' : 'off',
+      mode: manual ? 'manual' : 'auto'
+    })
 
     const tempText = lastTemp === null ? 'no temperature' : lastTemp.toFixed(1) + ' °C'
-    if (stale) setStatus('Temperature stale (' + tempText + '): fans on, board failsafe full speed')
-    else if (fansOn) setStatus(tempText + ': fans on at ' + duty + ' %')
+    const modeText = manual ? ' (manual)' : ''
+    if (stale) setStatus('Temperature stale (' + tempText + '): fans on, board failsafe full speed' + modeText)
+    else if (fansOn) setStatus(tempText + ': fans on at ' + duty + ' %' + modeText)
     else setStatus(tempText + ': fans off')
   }
 
@@ -181,10 +200,30 @@ module.exports = function (app) {
     app.emit('nmea2000out', `${new Date().toISOString()},${prio},${pgn},0,255,${bytes.length},${hex}`)
   }
 
-  // The board's 127500 status has state/status set; our own commands don't
   function handleN2k (n2k) {
-    if (n2k.pgn !== 127500 || !n2k.fields) return
-    const f = n2k.fields
+    if (!n2k.fields) return
+    if (n2k.pgn === 127502) handleSwitchCommand(n2k.fields)
+    else if (n2k.pgn === 127500) handleBoardStatus(n2k.fields)
+  }
+
+  // Manual mode from 127502 commands by others (kiosk, MFD). Our own and the
+  // board's echoed commands never contradict what we want, so they're no-ops.
+  function handleSwitchCommand (f) {
+    if (f.instance !== options.switchBank) return
+    const cmd = f['switch' + options.switchIndex]
+    if (cmd === 'On' && !manual && !fansOn) {
+      manual = true
+      app.debug('switched on by hand: manual mode')
+      tick()
+    } else if (cmd === 'Off' && manual) {
+      manual = false
+      app.debug('switched off by hand: back to auto')
+      tick()
+    }
+  }
+
+  // The board's 127500 status has state/status set; our own commands don't
+  function handleBoardStatus (f) {
     if (f.connectionId !== options.connectionId || f.state === undefined) return
     publish({
       dutyCycle: typeof f.pwmDutyCycle === 'number' ? f.pwmDutyCycle / 100 : null,
