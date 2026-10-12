@@ -7,6 +7,7 @@ An ESP32-based NMEA 2000 switch bank controller that manages 4 relay outputs via
 - 4-channel relay control via NMEA2000 CAN bus
 - C-Zone switch bank monitoring and piggyback control
 - Automatic stern light activation based on navigation and motor lights
+- Engine room fan speed control (PGN 127500) with RPM feedback (PGN 127488) and failsafe
 - Periodic status broadcasts for MFD synchronization
 - Automatic CAN bus recovery from bus-off conditions
 - Watchdog-based system recovery if CAN communication fails
@@ -31,6 +32,48 @@ The stern light (relay 3, GPIO 12) is automatically turned **ON** when **either*
 
 The stern light is passive: it only follows C-Zone. PGN 127502 commands for switch 3 are ignored, and the device answers them with its actual status so the MFD snaps back.
 
+## Engine Room Fans
+
+Two Orion OD1238-48HBVXC10A 4-wire PWM fans, mounted in series (one blowing into the other), cool the motor compartment. The Pi decides how fast they run, e.g. from `propulsion.port.oilTemperature`; this board only executes and reports, so there is no hard coupling to the engine sensors.
+
+- **Power**: relay 1 (GPIO 13), switched with PGN 127502 (bank 3, switch 1) as before
+- **Speed**: PGN 127500 duty cycle command from the network
+- **Feedback**: RPM of each fan (PGN 127488) and the applied duty (PGN 127500)
+
+### Wiring
+
+| Fan wire | Connection |
+|---|---|
+| Red (DC+) / Black (GND) | 48V supply via relay 1 |
+| Blue (PWM), both fans | GPIO 25 |
+| White (tach), fan 1 | GPIO 26, 1kΩ pull-up to 3.3V |
+| White (tach), fan 2 | GPIO 27, 1kΩ pull-up to 3.3V |
+
+Never pull the tach lines up to more than 3.3V. The tach inputs use the ESP32 pulse counter with a glitch filter, so short spikes (e.g. PWM crosstalk in the cable) are ignored.
+
+### Speed command (Pi → board): PGN 127500
+
+PGN 127500 "Load Controller Connection State/Control" is 8 single bytes. The board only looks at two of them:
+
+| Byte | Field | Value |
+|---|---|---|
+| 1 | Connection ID | `1` (the fans) |
+| 5 | PWM Duty Cycle | `0`–`100` (%) |
+
+All other bytes are ignored (send `0xFF`). The Pi must repeat the command periodically, e.g. every 5 seconds.
+
+**Failsafe**: the fans run at **100%** when no duty has been received since boot, or none for **30 seconds**. This matches the fans' own behaviour with a disconnected PWM wire. While relay 1 is off, the PWM output is held low so unpowered fans aren't driven.
+
+### Feedback (board → Pi), every second
+
+| PGN | Content | Signal K path |
+|---|---|---|
+| 127488 Engine Parameters, Rapid Update, instance 2 | Fan 1 RPM | `propulsion.2.revolutions` (Hz = RPM / 60) |
+| 127488 Engine Parameters, Rapid Update, instance 3 | Fan 2 RPM | `propulsion.3.revolutions` (Hz = RPM / 60) |
+| 127500, Connection ID 1 | State (byte 2): relay 1 on = 1; Status (byte 3): 1 = failsafe; PWM Duty (byte 5): duty actually applied | not mapped by Signal K, read the raw N2K data |
+
+With the fans in series, a large difference between the two RPM readings means one fan is failing or blocked.
+
 ## Hardware Configuration
 
 ### Relay Pin Mapping
@@ -39,7 +82,7 @@ The firmware controls 4 relays mapped to specific ESP32 GPIO pins:
 
 | Relay | GPIO | Purpose |
 |-------|------|---------|
-| 1 | 13 | Fan |
+| 1 | 13 | Engine room fans power |
 | 2 | 5 | Autopilot |
 | 3 | **12** | **Stern Light (C-Zone Piggyback)** |
 | 4 | 23 | Spare (not wired yet) |

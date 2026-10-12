@@ -6,6 +6,7 @@
 #include <ReactESP.h>
 #include <esp_task_wdt.h>
 #include "elapsedMillis.h"
+#include "fan.h"
 
 using namespace reactesp;
 
@@ -27,8 +28,10 @@ ReactESP app;
 #define CZONE_MOTOR_LIGHT_SWITCH 6  // Switch 6 on C-Zone bank 1 (motor light)
 #define STERN_LIGHT_SWITCH 3        // Relay 3 (GPIO 12): driven only by C-Zone, ignores 127502 commands
 
+#define FAN_POWER_SWITCH 1          // Relay 1 (GPIO 13): engine room fan power, speed see fan.cpp
+
 // List here messages your device will transmit.
-const unsigned long TransmitMessages[] PROGMEM = { 127501L, 127502L, 0 };
+const unsigned long TransmitMessages[] PROGMEM = { 127488L, 127500L, 127501L, 127502L, 0 };
 
 // Global Variables
 uint8_t CzRelayPinMap[NumberOfSwitches] = { 13, 5, 12, 23 }; // esp32 pins driving relays i.e CzRelayPinMap[0] returns the pin number of Relay 1
@@ -58,6 +61,7 @@ void WriteRelay(uint8_t SwitchIndex, bool On) {
         digitalWrite(Pin, On ? HIGH : LOW);
     }
     CzSwitchState[SwitchIndex - 1] = On;
+    if (SwitchIndex == FAN_POWER_SWITCH) FanSetPowered(On);
 }
 
 // Broadcast the actual state of all relays (pgn 127501)
@@ -153,6 +157,7 @@ void HandleStreamN2kMsg(const tN2kMsg &message) {
   ToggleLed();
   ParseCZoneSwitchState(message);  // Parse C-Zone messages
   HandleSwitchBankControl(message); // Parse standard NMEA switch bank messages
+  FanHandleN2kMsg(message);         // Parse fan speed commands
 }
 
 void RecoverFromCANBusOff() {
@@ -204,6 +209,8 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   app.onRepeatMicros(1e6 / 1, []() { ToggleLed(); });
 
+  FanSetup();
+
   // Initialize relay outputs, all off. Set the level before enabling the
   // output so the inverted stern light relay doesn't flash on at boot.
   for (uint8_t i = 1; i <= NumberOfSwitches; i++) {
@@ -251,6 +258,9 @@ void setup() {
     Serial.printf("RX: %d\n", num_n2k_messages);
     num_n2k_messages = 0;
   });
+
+  // measure and report fan RPM, apply fan failsafe
+  app.onRepeat(FAN_UPDATE_PERIOD_MS, []() { FanUpdate(*nmea2000); });
 
   // send periodic updates to maintain sync and as a "heartbeat" to the MFD
   app.onRepeat(CzUpdatePeriod127501, []() { SendSwitchBankStatus127501(); });

@@ -22,8 +22,9 @@ The default environment is `esp32dev` targeting an ESP32 development board.
 
 - **CAN Bus Pins**: RX on GPIO 34, TX on GPIO 32
 - **Relay Pin Mapping**: Array `CzRelayPinMap[]` in src/main.cpp defines which GPIO pins control which relays
-  - Relay 1-4 are mapped to GPIOs: 13 (fan), 5 (autopilot), 12 (stern light), 23 (spare)
+  - Relay 1-4 are mapped to GPIOs: 13 (fan power), 5 (autopilot), 12 (stern light), 23 (spare)
   - Relay 3 (stern light) uses inverted logic: LOW = ON (optocoupler + high-side switch)
+- **Fans** (src/fan.cpp): PWM for both fans on GPIO 25 (25 kHz), tach inputs on GPIO 26/27 (PCNT units 0/1)
 - **Built-in LED**: GPIO 2 (toggles on CAN message reception)
 
 ## Architecture
@@ -44,6 +45,13 @@ The default environment is `esp32dev` targeting an ESP32 development board.
    - Parsed in `ParseCZoneSwitchState()` via `N2kCZone.h` from the NMEA2000 library
    - Stern light = C-Zone bank 1 switch 4 (nav) OR switch 6 (motor)
 
+4. **PGN 127500** (incoming/outgoing): fan speed, in src/fan.cpp
+   - Incoming with Connection ID 1: byte 5 = PWM duty 0-100 %, sent periodically by the Pi
+   - Failsafe: 100 % if no duty since boot or for 30 s
+   - Outgoing every 1 s: state, failsafe status and applied duty
+
+5. **PGN 127488** (outgoing): fan RPM every 1 s as engine instances 2 and 3 (`propulsion.2/3.revolutions` in Signal K)
+
 ### State Management
 
 `CzSwitchState[]` holds the state of each relay. All relay writes go through `WriteRelay()`, which applies the stern light's inverted logic and updates the state array.
@@ -54,6 +62,7 @@ Uses ReactESP for event-driven programming:
 - 1ms interval: Parse NMEA messages and poll CAN bus status
 - 100ms interval: Check for CAN RX timeout (reboots if no messages for 30s)
 - 1s interval: Debug output
+- 1s interval: fan RPM measurement and reports (`FanUpdate()`)
 - 10s interval: PGN 127501 status heartbeat
 
 ### CAN Bus Recovery
