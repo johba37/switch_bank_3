@@ -74,6 +74,20 @@ All other bytes are ignored (send `0xFF`). The Pi must repeat the command period
 
 With the fans in series, a large difference between the two RPM readings means one fan is failing or blocked.
 
+### Pi side: `signalk-engine-room-fans` plugin
+
+The control logic lives in a small Signal K plugin on the Pi, kept in [`signalk-engine-room-fans/`](signalk-engine-room-fans/). It reads `propulsion.port.oilTemperature` and:
+
+- switches relay 1 on at `fansOnTemp` (default 50 °C) and off below `fansOffTemp` (45 °C)
+- while on, sends a duty every 5 s: `minDuty` (30 %) at `fansOnTemp`, rising linearly to 100 % at `fullSpeedTemp` (90 °C)
+- re-sends the relay command until the 127501 status agrees, so the fans come back after a board reboot
+- switches the fans on and stops sending duty if the temperature is stale for 60 s, so the board's 100 % failsafe takes over
+- publishes `electrical.fans.engineRoom.*`: `state`, `commandedDutyCycle`, and decoded from the board's 127500 status `dutyCycle`, `failsafe`, `powered`
+
+All thresholds are configurable in the Signal K admin UI (Server → Plugin Config → Engine room fans).
+
+Deploy: copy the folder to `~/.signalk/node_modules/` on the Pi and restart Signal K.
+
 ## Hardware Configuration
 
 ### Relay Pin Mapping

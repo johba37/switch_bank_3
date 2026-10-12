@@ -1,0 +1,12 @@
+{
+  "name": "signalk-engine-room-fans",
+  "version": "1.0.0",
+  "description": "Switches and speed-controls the engine room fans on Switch Bank 3 from the engine oil temperature (PGN 127502 power, PGN 127500 duty)",
+  "main": "index.js",
+  "keywords": [
+    "signalk-node-server-plugin",
+    "signalk-category-utility"
+  ],
+  "license": "Apache-2.0",
+  "private": true
+}
