@@ -6,7 +6,7 @@
 //   - speed:  PGN 127500 Load Controller, Connection ID 1, byte 5 = duty 0-100 %
 //   - RPM:    PGN 127488 engine instances 2 and 3 -> propulsion.2/3.revolutions
 //
-// This plugin is the brain: it watches the engine oil temperature and
+// This plugin is the brain: it watches the (electric) motor temperature and
 //   - switches the fans on above `fansOnTemp`, off below `fansOffTemp`
 //   - while on, sends a duty every few seconds: `minDuty` at `fansOnTemp`
 //     rising linearly to 100 % at `fullSpeedTemp`
@@ -43,9 +43,9 @@ module.exports = function (app) {
       type: 'object',
       properties: {
         temperaturePath: { type: 'string', title: 'Temperature path', default: 'propulsion.port.oilTemperature' },
-        fansOnTemp: { type: 'number', title: 'Fans on at (°C)', default: 50 },
-        fansOffTemp: { type: 'number', title: 'Fans off below (°C)', default: 45 },
-        fullSpeedTemp: { type: 'number', title: 'Full speed at (°C)', default: 90 },
+        fansOnTemp: { type: 'number', title: 'Fans on at (°C)', default: 25 },
+        fansOffTemp: { type: 'number', title: 'Fans off below (°C)', default: 22 },
+        fullSpeedTemp: { type: 'number', title: 'Full speed at (°C)', default: 45 },
         minDuty: { type: 'number', title: 'Minimum duty while on (%)', default: 30 },
         staleTimeout: { type: 'number', title: 'Temperature stale after (s): fans on at full speed', default: 60 },
         sendInterval: { type: 'number', title: 'Send interval (s), must be well below the board\'s 30 s timeout', default: 5 },

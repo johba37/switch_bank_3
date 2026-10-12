@@ -34,7 +34,7 @@ The stern light is passive: it only follows C-Zone. PGN 127502 commands for swit
 
 ## Engine Room Fans
 
-Two Orion OD1238-48HBVXC10A 4-wire PWM fans, mounted in series (one blowing into the other), cool the motor compartment. The Pi decides how fast they run, e.g. from `propulsion.port.oilTemperature`; this board only executes and reports, so there is no hard coupling to the engine sensors.
+Two Orion OD1238-48HBVXC10A 4-wire PWM fans, mounted in series (one blowing into the other), cool the electric motor compartment. The Pi decides how fast they run, e.g. from `propulsion.port.oilTemperature`; this board only executes and reports, so there is no hard coupling to the engine sensors.
 
 - **Power**: relay 1 (GPIO 13), switched with PGN 127502 (bank 3, switch 1) as before
 - **Speed**: PGN 127500 duty cycle command from the network
@@ -78,8 +78,8 @@ With the fans in series, a large difference between the two RPM readings means o
 
 The control logic lives in a small Signal K plugin on the Pi, kept in [`signalk-engine-room-fans/`](signalk-engine-room-fans/). It reads `propulsion.port.oilTemperature` and:
 
-- switches relay 1 on at `fansOnTemp` (default 50 °C) and off below `fansOffTemp` (45 °C)
-- while on, sends a duty every 5 s: `minDuty` (30 %) at `fansOnTemp`, rising linearly to 100 % at `fullSpeedTemp` (90 °C)
+- switches relay 1 on at `fansOnTemp` (default 25 °C) and off below `fansOffTemp` (22 °C)
+- while on, sends a duty every 5 s: `minDuty` (30 %) at `fansOnTemp`, rising linearly to 100 % at `fullSpeedTemp` (45 °C), to keep the electric motor below 50 °C
 - re-sends the relay command until the 127501 status agrees, so the fans come back after a board reboot
 - switches the fans on and stops sending duty if the temperature is stale for 60 s, so the board's 100 % failsafe takes over
 - publishes `electrical.fans.engineRoom.*`: `state`, `commandedDutyCycle`, and decoded from the board's 127500 status `dutyCycle`, `failsafe`, `powered`
